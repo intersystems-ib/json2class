@@ -1,0 +1,15 @@
+services:
+
+  # iris
+  iris:
+    container_name: iris
+    build:
+      context: .
+      dockerfile: iris/Dockerfile
+    ports:
+      - 52774:52773
+      - 51774:1972
+    volumes:
+    - ./iris/shared:/shared
+    environment:
+    - ISC_DATA_DIRECTORY=/shared/durable

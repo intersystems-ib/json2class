@@ -1,0 +1,6 @@
+zn "%SYS"
+do ##class(%SYSTEM.License).Upgrade()
+do ##class(SYS.Container).QuiesceForBundling()
+do ##class(Security.Users).UnExpireUserPasswords("*")
+zn "UTILS"
+set sc = $SYSTEM.OBJ.LoadDir("/opt/irisapp/src/Utils", "ck", , 1)

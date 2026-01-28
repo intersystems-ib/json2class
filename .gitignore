@@ -1,0 +1,5 @@
+iris/shared/durable
+iris/shared/generated/*
+.vscode
+
+!iris/shared/generated/.gitkeep
