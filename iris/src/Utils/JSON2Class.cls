@@ -90,8 +90,15 @@ ClassMethod ConvertB64ToFiles(b64 As %String, basePackage As %String = "App.Mode
 
         return cls
 
-    def is_iso8601(s: str) -> bool:
-        return bool(re.match(r'^\d{4}-\d{2}-\d{2}([T\s]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+\-]\d{2}:\d{2})?)?$', s))
+    def is_date_only(s: str) -> bool:
+        return bool(re.match(r'^\d{4}-\d{2}-\d{2}$', s))
+
+    def is_timestamp(s: str) -> bool:
+        # ISO 8601 con hora (T o espacio), opcional fracción y zona
+        return bool(re.match(
+            r'^\d{4}-\d{2}-\d{2}([T\s]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+\-]\d{2}:\d{2})?)$',
+            s
+        ))
 
     def scalar_type(v):
         if v is None:
@@ -105,7 +112,9 @@ ClassMethod ConvertB64ToFiles(b64 As %String, basePackage As %String = "App.Mode
         if isinstance(v, (Decimal,)):
             return "%Numeric"
         if isinstance(v, str):
-            if is_iso8601(v):
+            if is_date_only(v):
+                return "%Date"
+            if is_timestamp(v):
                 return "%TimeStamp"
             return "%String"
         return "%String"
@@ -163,25 +172,64 @@ ClassMethod ConvertB64ToFiles(b64 As %String, basePackage As %String = "App.Mode
             old = c["props"][prop_name]["type_spec"]
             c["props"][prop_name]["type_spec"] = merge_type_specs(old, type_spec)
 
+    def unique_prop_name(class_full, desired_prop, desired_json_name):
+        """
+        Si desired_prop ya existe pero mapea a otro json_name, genera un nombre alternativo:
+        - primero intenta PropJSON
+        - luego PropJSON2, PropJSON3...
+        """
+        c = classes[class_full]
+        if desired_prop not in c["props"]:
+            return desired_prop
+
+        existing_json = c["props"][desired_prop]["json_name"]
+        if str(existing_json) == str(desired_json_name):
+            return desired_prop
+
+        base = desired_prop
+        candidate = base + "JSON"
+        if candidate not in c["props"]:
+            return candidate
+
+        i = 2
+        while True:
+            candidate = f"{base}JSON{i}"
+            if candidate not in c["props"]:
+                return candidate
+            i += 1
+
     def analyze_object(obj, class_full):
         for k, v in obj.items():
             original_json_name = str(k)
+            json_name_for_mapping = original_json_name
 
             # 1) normalizar nombre (sin "_")
             prop = sanitize_identifier(original_json_name)
 
             # 2) regla especial: no usar "id"
-            json_name_for_mapping = original_json_name
             if prop.lower() == "id":
                 prop = "idJSON"
                 json_name_for_mapping = "id"
 
-            # 3) regla: si coincide con palabra reservada SQL, añadir "JSON"
-            #    y forzar %JSONFIELDNAME (manteniendo el nombre original del JSON)
+            # 3) regla FHIR: campos companion que empiezan por "_" (p.ej. _family)
+            #    Si existe el campo base (sin '_') en la clase, usar base + 'JSON'
+            if original_json_name.startswith("_"):
+                base_key = sanitize_identifier(original_json_name[1:])  # "_family" -> "family"
+                if base_key and base_key in classes[class_full]["props"]:
+                    prop = base_key + "JSON"
+                    json_name_for_mapping = original_json_name
+                else:
+                    prop = sanitize_identifier(original_json_name)
+                    json_name_for_mapping = original_json_name
+
+            # 4) palabra reservada SQL => añadir "JSON"
             if is_sql_reserved(prop):
                 if not prop.endswith("JSON"):
                     prop = prop + "JSON"
                 json_name_for_mapping = original_json_name
+
+            # 5) evitar colisiones generales (p.ej. family vs _family al normalizar, a-b vs ab, etc.)
+            prop = unique_prop_name(class_full, prop, json_name_for_mapping)
 
             analyze_value(v, class_full, prop, json_name_for_mapping)
 
@@ -200,7 +248,8 @@ ClassMethod ConvertB64ToFiles(b64 As %String, basePackage As %String = "App.Mode
 
         if any_dict and all_dict:
             # la clase del elemento depende del padre (class_full)
-            elem_class_name = to_class_name(prop)
+            # usa json_name para el nombre de clase (evita nombres raros tipo Familyjson)
+            elem_class_name = to_class_name(json_name)
             elem_full = f"{class_full}.{elem_class_name}"
             ensure_class(elem_full, "serial")
             for el in arr:
@@ -223,7 +272,8 @@ ClassMethod ConvertB64ToFiles(b64 As %String, basePackage As %String = "App.Mode
     def analyze_value(v, class_full, prop, json_name):
         if isinstance(v, dict):
             # la clase hija depende del padre (class_full)
-            child_class_name = to_class_name(prop)
+            # usa json_name para el nombre de clase (evita nombres raros tipo Familyjson)
+            child_class_name = to_class_name(json_name)
             child_full = f"{class_full}.{child_class_name}"
             ensure_class(child_full, "serial")
             analyze_object(v, child_full)
@@ -251,26 +301,46 @@ ClassMethod ConvertB64ToFiles(b64 As %String, basePackage As %String = "App.Mode
         json_name = meta["json_name"]
         k, v = meta["type_spec"]
 
+        needs_map = (json_name is not None and str(json_name) != str(prop))
+
+        def string_base(with_map: bool) -> str:
+            if with_map:
+                return f'%String(MAXLEN="", %JSONFIELDNAME = "{os_quote(json_name)}")'
+            return '%String(MAXLEN="")'
+
+        # Construir type_str
         if k == "scalar":
-            type_str = v
+            if v == "%String":
+                type_str = string_base(needs_map)  # %JSONFIELDNAME dentro del tipo
+                prop_params = ""                   # y NO como params de propiedad
+            else:
+                type_str = v
+                prop_params = f' (%JSONFIELDNAME = "{os_quote(json_name)}")' if needs_map else ""
+
         elif k == "list":
-            type_str = f"list Of {v}"
+            if v == "%String":
+                type_str = f'list Of {string_base(False)}'  # list Of %String(MAXLEN="")
+                prop_params = f' (%JSONFIELDNAME = "{os_quote(json_name)}")' if needs_map else ""
+            else:
+                type_str = f"list Of {v}"
+                prop_params = f' (%JSONFIELDNAME = "{os_quote(json_name)}")' if needs_map else ""
+
         elif k == "serial":
             type_str = v
+            prop_params = f' (%JSONFIELDNAME = "{os_quote(json_name)}")' if needs_map else ""
+
         elif k == "list_serial":
             type_str = f"list Of {v}"
+            prop_params = f' (%JSONFIELDNAME = "{os_quote(json_name)}")' if needs_map else ""
+
         else:
-            type_str = "%String"
+            type_str = '%String(MAXLEN="")'
+            prop_params = ""
 
-        params = ""
-        if json_name is not None and str(json_name) != str(prop):
-            # parámetros entre paréntesis
-            params = f'(%JSONFIELDNAME = "{os_quote(json_name)}")'
+        return f"Property {prop} As {type_str}{prop_params};"
 
-        return f"Property {prop} As {type_str}{params};"
 
     def emit_class(full_name, meta):
-        # ✅ FIX: Extends con lista entre paréntesis
         base_extends = "%Persistent" if meta["kind"] == "persistent" else "%SerialObject"
         extends = f"({base_extends} , %JSON.Adaptor)"
 
@@ -305,6 +375,32 @@ ClassMethod ConvertB64ToFiles(b64 As %String, basePackage As %String = "App.Mode
             written += " " + fpath
 
     return written
+}
+
+/// Crea y rellena una instancia de className a partir de un JSON.
+/// Requiere que className extienda de %JSON.Adaptor (como las clases generadas).
+ClassMethod NewInstanceFromJSON(json As %String, className As %String) As %RegisteredObject
+{
+    #dim obj As %RegisteredObject
+    #dim sc As %Status
+
+    if className="" {
+        throw ##class(%Exception.General).%New("className is required")
+    }
+
+    // Crear instancia dinámica por nombre de clase
+    set obj = $classmethod(className, "%New")
+    if obj="" {
+        throw ##class(%Exception.General).%New("Unable to instantiate class: "_className)
+    }
+
+    // Importar JSON (usa %JSONFIELDNAME, y genera objetos anidados automáticamente)
+    set sc = obj.%JSONImport(json)
+    if $$$ISERR(sc) {
+        throw ##class(%Exception.StatusException).CreateFromStatus(sc)
+    }
+
+    quit obj
 }
 
 }
