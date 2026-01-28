@@ -1,4 +1,4 @@
-# JSON to ObjectScript Class Generator (InterSystems IRIS)
+# JSON to ObjectScript Class Generator
 
 ![image](https://github.com/intersystems-ib/json2class/blob/main/images/json2class.png)
 
