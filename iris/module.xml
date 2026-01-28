@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Export generator="Cache" version="25">
+  <Document name="json2class.ZPM">
+    <Module>
+      <Name>json2class</Name>
+      <Version>1.0.0</Version>
+      <Description>Module developed to implement JSON to ObjectScript class conversion</Description>
+      <Keywords>json class conversion</Keywords>
+      <Author>
+        <Person>InterSystems Iberia</Person>
+        <Organization>InterSystems</Organization>
+        <CopyrightDate>2026</CopyrightDate>
+        <License>MIT</License>
+      </Author>
+      <Packaging>module</Packaging>
+      <SourcesRoot>/iris/src</SourcesRoot>
+      <Resource Name="json2class.PKG"/>
+    </Module>
+  </Document>
+</Export>
