@@ -1,5 +1,7 @@
 # JSON to ObjectScript Class Generator (InterSystems IRIS)
 
+![image](https://github.com/intersystems-ib/json2class/blob/main/images/json2class.png)
+
 ## 1. Environment and Deployment
 
 This project is designed to run on **InterSystems IRIS Community Edition**, using **Docker Compose** as the deployment mechanism.
